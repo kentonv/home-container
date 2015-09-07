@@ -8,12 +8,50 @@
 #include <sys/stat.h>
 #include <sys/mount.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <string.h>
 #include <pwd.h>
+#include <errno.h>
+#include <assert.h>
+#include <execinfo.h>
+
+// =======================================================================================
+
+void stack_trace(int skip) {
+  void* trace[32];
+  int size = backtrace(trace, 32);
+  
+  char exe[128];
+  snprintf(exe, 128, "/proc/%d/exe", getpid());
+  
+  pid_t child = fork();
+  if (child == 0) {
+    char* cmd[36];
+    cmd[0] = "addr2line";
+    cmd[1] = "-e";
+    cmd[2] = exe;
+  
+    char addrs[64][32];
+    int i;
+    for (i = 0; i < size - skip; i++) {
+      snprintf(addrs[i], 64, "%p", trace[i + skip]);
+      cmd[3 + i] = addrs[i];
+    }
+    cmd[3 + size - skip] = NULL;
+  
+    execvp("addr2line", cmd);
+    perror("addr2line");
+    exit(1);
+  }
+  
+  int status;
+  waitpid(child, &status, 0);
+}
 
 void fail_errno(const char* code) __attribute__((noreturn));
 void fail_errno(const char* code) {
   perror(code);
+  stack_trace(2);
   abort();
 }
 
@@ -22,39 +60,167 @@ void fail(const char* why, ...) {
   va_list args;
   va_start(args, why);
   vfprintf(stderr, why, args);
+  stack_trace(2);
   abort();
 }
 
 #define sys(code) if ((int)(code) == -1) fail_errno(#code);
 #define die(reason, ...) fail(reason "\n", ##__VA_ARGS__);
 
-const char* const MAP_FROM_HOME[] = {
-  // Things in the user's home directory which Chrome needs to be able to see.
-  // TODO: Tighten this. Probably only certain subdirectories are needed, and in some
-  //   cases they can probably be bound read-only. But at least .ssh and .gnupg are
-  //   not on the list!
-  ".config", ".local", ".pki", "Downloads"
+// =======================================================================================
+
+enum file_type {
+  NONEXISTENT,
+  NON_DIRECTORY,
+  DIRECTORY,
 };
+
+enum file_type get_file_type(const char* path) {
+  // Determine if the path is a directory, a non-directory file, or doesn't exist.
+
+  struct stat stats;
+  if (stat(path, &stats) < 0) {
+    if (errno == ENOENT || errno == ENOTDIR) {
+      return NONEXISTENT;
+    } else {
+      perror(path);
+      abort();
+    }
+  }
+  return S_ISDIR(stats.st_mode) ? DIRECTORY : NON_DIRECTORY;
+}
+
+enum bind_type {
+  EMPTY,       // just make an empty node of the same type (file or dir)
+  READONLY,    // bind the destination to the source, read-only
+  FULL,        // bind the destination to the source, read-write
+};
+
+void bind(enum bind_type type, const char* src, const char* dst) {
+  // Bind-mount src to dst, such that dst becomes an alias for src.
+
+  switch (get_file_type(src)) {
+    case NONEXISTENT:
+      // Skip files that don't exist.
+      return;
+    case DIRECTORY:
+      sys(mkdir(dst, 0777));
+      break;
+    case NON_DIRECTORY:
+      // Make an empty regular file to bind over.
+      sys(mknod(dst, S_IFREG | 0777, 0));
+      break;
+  }
+  
+  if (type == EMPTY) {
+    // Don't bind, just copy permissions.
+    struct stat stats;
+    sys(stat(src, &stats));
+    sys(chown(dst, stats.st_uid, stats.st_gid));
+    sys(chmod(dst, stats.st_mode));
+  } else {
+    // Bind the source file over the destination.
+    sys(mount(src, dst, NULL, MS_BIND | MS_REC, NULL));
+    if (type == READONLY) {
+      // Setting the READONLY flag requires a remount. (If we tried to set it in the
+      // first mount it would be silently ignored.)
+      sys(mount(src, dst, NULL, MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL));
+    } else {
+      // This directory will be writable. Let's make it noexec, though, to try to disrupt
+      // exploits that write a binary to disk then execute it. (Note that this is pretty
+      // easy to get around if the attacker knows to expect it.)
+      sys(mount(src, dst, NULL, MS_REMOUNT | MS_BIND | MS_REC | MS_NOEXEC, NULL));
+    }
+  }
+}
+
+void hide(const char* dst) {
+  // If the given path exists, hide it by overmounting it with an empty file/dir.
+
+  switch (get_file_type(dst)) {
+    case NONEXISTENT:
+      return;
+    case DIRECTORY:
+      // Empty tmpfs.
+      sys(mount("tmpfs", dst, "tmpfs", 0, "size=2M,nr_inodes=4096,mode=777"));
+      break;
+    case NON_DIRECTORY:
+      sys(mount("/dev/null", dst, NULL, MS_BIND | MS_REC, NULL));
+      break;
+  }
+}
+
+void bind_in_container(enum bind_type type, const char* path) {
+  // Assuming the current directory is where we're setting up the container, bind the
+  // given absolute path from outside the container to the same path inside.
+
+  assert(path[0] == '/');
+  bind(type, path, path + 1);
+}
+
+void hide_in_container(const char* path) {
+  // Assuming the current directory is where we're setting up the container, hide the given
+  // absolute path inside the container.
+
+  assert(path[0] == '/');
+  hide(path + 1);
+}
+
+int mkdir_user_owned(const char* path, mode_t mode, struct passwd* user) {
+  int result = mkdir(path, mode);
+  if (result >= 0) {
+    sys(chown(path, user->pw_uid, user->pw_gid));
+  }
+  return result;
+}
+
+// =======================================================================================
+
+const char* home_path(struct passwd* user, const char* path) {
+  static char result[512];
+  snprintf(result, 512, "/home/%s%s%s", user->pw_name, *path == '\0' ? "" : "/", path);
+  return result;
+}
+
+void setup_chrome(struct passwd* user, const char* profile) {
+  bind_in_container(EMPTY, home_path(user, ".local"));
+  bind_in_container(READONLY, home_path(user, ".local/share"));
+  bind_in_container(READONLY, home_path(user, ".config"));
+  bind_in_container(FULL, home_path(user, ".pki"));
+  bind_in_container(FULL, home_path(user, "Downloads"));
+  bind_in_container(READONLY, home_path(user, "Pictures"));  // Most common upload source.
+
+  // Make the profile directory if it doesn't exist.
+  char profile_dir[512];
+  snprintf(profile_dir, 512, ".chrome-container/%s", profile);
+  mkdir_user_owned(home_path(user, ".chrome-container"), 0700, user);
+  mkdir_user_owned(home_path(user, profile_dir), 0700, user);
+  
+  // Bind in the specific profile.
+  bind_in_container(EMPTY, home_path(user, ".chrome-container"));
+  bind_in_container(FULL, home_path(user, profile_dir));
+}
+
+// =======================================================================================
 
 void validate(const char* name) {
   // Disallow path injection (., .., or anything with a /).
 
-  if (strchr(name, '/') != NULL || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+  if (*name == '\0' || strchr(name, '/') != NULL ||
+      strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
     die("invalid: %s", name);
   }
 }
 
 int main(int argc, const char* argv[]) {
-  if (argc < 2 || argc > 3) {
-    fprintf(stderr, "usage: %s [google-chrome{,-beta,-dev}] [profile-name]\n", argv[0]);
+  if (argc > 2) {
+    fprintf(stderr, "usage: %s [profile-name]\n", argv[0]);
     return 1;
   }
-  const char* chrome_cmd = argc < 2 ? "google-chrome" : argv[1];
-  const char* chrome_profile = argc < 3 ? chrome_cmd : argv[2];
-  
-  validate(chrome_cmd);
-  validate(chrome_profile);
-  
+  const char* profile = argc < 2 ? "default" : argv[1];
+
+  validate(profile);
+
   // Check that we are suid-root, but were not executed by root.
   // TODO: Once Chrome supports uid namespaces rather than using a setuid sandbox, we
   //   should also switch to using uid namespaces and not require setuid. See:
@@ -83,49 +249,22 @@ int main(int argc, const char* argv[]) {
 
   // Start building our new tree under /tmp. First, bind-mount / to /tmp and make it read-only.
   sys(mount("/", "/tmp", NULL, MS_BIND | MS_REC, NULL));
-  sys(mount("/tmp", "/tmp", NULL, MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL));
+  sys(mount("/", "/tmp", NULL, MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL));
+
+  // We'll set the container root as our current directory so that the _in_container() helpers
+  // work.
+  sys(chdir("/tmp"));
   
-  // Overmount /home with a tmpfs where we'll then only bind in the things that Chrome needs.
-  sys(mount("tmpfs", "/tmp/home", "tmpfs", 0, "size=2M,nr_inodes=4096,mode=777"));
+  // Stuff in /var probably shouldn't be visible in the container, except /var/tmp.
+  hide_in_container("/var");
+  bind_in_container(FULL, "/var/tmp");
   
-  // Create the user's home directory in the new tmpfs.
-  char buffer[512];
-  sprintf(buffer, "/tmp/home/%s", user->pw_name);
-  sys(mkdir(buffer, 0777));
-  sys(chown(buffer, ruid, -1));
-
-  // Bind the chrome profile directory into the new mount tree at ~/chrome-profile (regardless
-  // of its original filename).
-  char chrome_home[512];
-  sprintf(chrome_home, "/home/%s/.config/%s", user->pw_name, chrome_profile);
-
-  if (access(chrome_home, F_OK) != 0) {
-    sys(mkdir(chrome_home, 0700));
-    sys(chown(chrome_home, ruid, -1));
-  }
-
-  sprintf(buffer, "/tmp/home/%s/chrome-profile", user->pw_name);
-  sys(mkdir(buffer, 0777));
-  sys(mount(chrome_home, buffer, NULL, MS_BIND | MS_REC, NULL));
-
-  // Bind in the files and directories from the user's homedir which Chrome needs to operate.
-  // (See the list defined above as MAP_FROM_HOME.)
-  size_t i;
-  for (i = 0; i < sizeof(MAP_FROM_HOME) / sizeof(MAP_FROM_HOME[0]); i++) {
-    char from[512], to[512];
-    sprintf(from, "/home/%s/%s", user->pw_name, MAP_FROM_HOME[i]);
-    sprintf(to, "/tmp/%s", from);
-    
-    struct stat stats;
-    if (stat(from, &stats) >= 0) {
-      if (S_ISDIR(stats.st_mode)) {
-        sys(mkdir(to, 0777));
-      } else {
-        sys(mknod(to, S_IFREG | 0777, 0));
-      }
-      sys(mount(from, to, NULL, MS_BIND | MS_REC, NULL));
-    }
-  }
+  // Hide /home, then we'll bring back the specific things we need.
+  hide_in_container("/home");
+  bind_in_container(EMPTY, home_path(user, ""));
+  
+  // Bind in the stuff Chrome needs.
+  setup_chrome(user, profile);
 
   // Use pivot_root() to replace our root directory with the tree we built in /tmp. This is
   // more secure than chroot().
@@ -141,6 +280,7 @@ int main(int argc, const char* argv[]) {
   sys(setresuid(ruid, ruid, ruid));
 
   // Execute Chrome!
-  sprintf(buffer, "--user-data-dir=/home/%s/chrome-profile", user->pw_name);
-  sys(execlp(chrome_cmd, chrome_cmd, buffer, NULL));
+  char param[512];
+  snprintf(param, 512, "--user-data-dir=/home/%s/.chrome-container/%s", user->pw_name, profile);
+  sys(execlp("google-chrome", "google-chrome", param, NULL));
 }
