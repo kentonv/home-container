@@ -37,6 +37,7 @@
 #include <execinfo.h>
 
 // =======================================================================================
+// error handling
 
 void stack_trace(int skip) {
   void* trace[32];
@@ -69,26 +70,29 @@ void stack_trace(int skip) {
   waitpid(child, &status, 0);
 }
 
-void fail_errno(const char* code) __attribute__((noreturn));
-void fail_errno(const char* code) {
+void fail_errno_except_eintr(const char* code) {
+  if (errno == EINTR) return;  // interrupted; return and try again
   perror(code);
   stack_trace(2);
   abort();
 }
 
-void fail(const char* why, ...) __attribute__((noreturn));
-void fail(const char* why, ...) {
+void die(const char* why, ...) __attribute__((noreturn));
+void die(const char* why, ...) {
+  // Abort with the given error message.
   va_list args;
   va_start(args, why);
   vfprintf(stderr, why, args);
+  putc('\n', stderr);
   stack_trace(2);
   abort();
 }
 
-#define sys(code) if ((int)(code) == -1) fail_errno(#code);
-#define die(reason, ...) fail(reason "\n", ##__VA_ARGS__);
+#define sys(code) while ((int)(code) == -1) fail_errno_except_eintr(#code);
+// Run the given system call and abort if it fails.
 
 // =======================================================================================
+// helpers for setting up mount tree
 
 enum file_type {
   NONEXISTENT,
@@ -195,21 +199,30 @@ int mkdir_user_owned(const char* path, mode_t mode, struct passwd* user) {
   return result;
 }
 
-// =======================================================================================
-
 const char* home_path(struct passwd* user, const char* path) {
   static char result[512];
   snprintf(result, 512, "/home/%s%s%s", user->pw_name, *path == '\0' ? "" : "/", path);
   return result;
 }
 
+// =======================================================================================
+// Chrome-specific setup
+
 void setup_chrome(struct passwd* user, const char* profile) {
+  // Chrome reads system config stuff from ~/.local/share and ~/.config.
   bind_in_container(EMPTY, home_path(user, ".local"));
   bind_in_container(READONLY, home_path(user, ".local/share"));
   bind_in_container(READONLY, home_path(user, ".config"));
+  
+  // libnss certificate store -- needs to be writable so that you can edit certificates in
+  // Chrome's settings.
   bind_in_container(FULL, home_path(user, ".pki"));
+  
+  // The browser needs to write to Downloads, obviously.
   bind_in_container(FULL, home_path(user, "Downloads"));
-  bind_in_container(READONLY, home_path(user, "Pictures"));  // Most common upload source.
+  
+  // I think ~90% of my in-browser uploads are from Pictures, so map that in read-only.
+  bind_in_container(READONLY, home_path(user, "Pictures"));
 
   // Make the profile directory if it doesn't exist.
   char profile_dir[512];
@@ -220,6 +233,13 @@ void setup_chrome(struct passwd* user, const char* profile) {
   // Bind in the specific profile.
   bind_in_container(EMPTY, home_path(user, ".chrome-container"));
   bind_in_container(FULL, home_path(user, profile_dir));
+}
+
+void run_chrome(struct passwd* user, const char* profile) {
+  char param[512];
+  snprintf(param, 512, "--user-data-dir=/home/%s/.chrome-container/%s", user->pw_name, profile);
+  sys(execlp("google-chrome", "google-chrome", param, NULL));
+  die("can't get here");
 }
 
 // =======================================================================================
@@ -301,7 +321,5 @@ int main(int argc, const char* argv[]) {
   sys(setresuid(ruid, ruid, ruid));
 
   // Execute Chrome!
-  char param[512];
-  snprintf(param, 512, "--user-data-dir=/home/%s/.chrome-container/%s", user->pw_name, profile);
-  sys(execlp("google-chrome", "google-chrome", param, NULL));
+  run_chrome(user, profile);
 }
