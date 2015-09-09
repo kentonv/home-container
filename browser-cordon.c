@@ -37,7 +37,7 @@
 #include <execinfo.h>
 
 // =======================================================================================
-// error handling
+// generic error handling
 
 void stack_trace(int skip) {
   void* trace[32];
@@ -77,6 +77,9 @@ void fail_errno_except_eintr(const char* code) {
   abort();
 }
 
+#define sys(code) while ((int)(code) == -1) fail_errno_except_eintr(#code);
+// Run the given system call and abort if it fails.
+
 void die(const char* why, ...) __attribute__((noreturn));
 void die(const char* why, ...) {
   // Abort with the given error message.
@@ -87,9 +90,6 @@ void die(const char* why, ...) {
   stack_trace(2);
   abort();
 }
-
-#define sys(code) while ((int)(code) == -1) fail_errno_except_eintr(#code);
-// Run the given system call and abort if it fails.
 
 // =======================================================================================
 // helpers for setting up mount tree
@@ -129,7 +129,9 @@ void bind(enum bind_type type, const char* src, const char* dst) {
       // Skip files that don't exist.
       return;
     case DIRECTORY:
-      sys(mkdir(dst, 0777));
+      while (mkdir(dst, 0777) < 0 && errno != EEXIST) {
+        fail_errno_except_eintr("mkdir(dst, 0777)");
+      }
       break;
     case NON_DIRECTORY:
       // Make an empty regular file to bind over.
@@ -150,11 +152,6 @@ void bind(enum bind_type type, const char* src, const char* dst) {
       // Setting the READONLY flag requires a remount. (If we tried to set it in the
       // first mount it would be silently ignored.)
       sys(mount(src, dst, NULL, MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL));
-    } else {
-      // This directory will be writable. Let's make it noexec, though, to try to disrupt
-      // exploits that write a binary to disk then execute it. (Note that this is pretty
-      // easy to get around if the attacker knows to expect it.)
-      sys(mount(src, dst, NULL, MS_REMOUNT | MS_BIND | MS_REC | MS_NOEXEC, NULL));
     }
   }
 }
@@ -167,7 +164,7 @@ void hide(const char* dst) {
       return;
     case DIRECTORY:
       // Empty tmpfs.
-      sys(mount("tmpfs", dst, "tmpfs", 0, "size=2M,nr_inodes=4096,mode=777"));
+      sys(mount("tmpfs", dst, "tmpfs", 0, "size=2M,nr_inodes=4096,mode=755"));
       break;
     case NON_DIRECTORY:
       sys(mount("/dev/null", dst, NULL, MS_BIND | MS_REC, NULL));
@@ -180,6 +177,19 @@ void bind_in_cordon(enum bind_type type, const char* path) {
   // given absolute path from outside the cordon to the same path inside.
 
   assert(path[0] == '/');
+
+  // Verify parent has been bound, or bind it "empty".
+  char parent[strlen(path + 1)];
+  strcpy(parent, path);
+  char* slashPos = strrchr(parent + 1, '/');
+  if (slashPos != NULL) {
+    *slashPos = '\0';
+    if (access(parent + 1, F_OK) != 0) {
+      bind_in_cordon(EMPTY, parent);
+    }
+  }
+
+  // OK, bind child.
   bind(type, path, path + 1);
 }
 
@@ -201,66 +211,96 @@ int mkdir_user_owned(const char* path, mode_t mode, struct passwd* user) {
 
 const char* home_path(struct passwd* user, const char* path) {
   static char result[512];
-  snprintf(result, 512, "/home/%s%s%s", user->pw_name, *path == '\0' ? "" : "/", path);
+  if (path == NULL) {
+    snprintf(result, 512, "/home/%s", user->pw_name);
+  } else {
+    snprintf(result, 512, "/home/%s/%s", user->pw_name, path);
+  }
   return result;
 }
 
 // =======================================================================================
-// Chrome-specific setup
 
-void setup_chrome(struct passwd* user, const char* profile) {
-  // Chrome reads system config stuff from ~/.local/share and ~/.config.
-  bind_in_cordon(EMPTY, home_path(user, ".local"));
-  bind_in_cordon(READONLY, home_path(user, ".local/share"));
-  bind_in_cordon(READONLY, home_path(user, ".config"));
-
-  // libnss certificate store -- needs to be writable so that you can edit certificates in
-  // Chrome's settings.
-  bind_in_cordon(FULL, home_path(user, ".pki"));
-
-  // The browser needs to write to Downloads, obviously.
-  bind_in_cordon(FULL, home_path(user, "Downloads"));
-
-  // I think ~90% of my in-browser uploads are from Pictures, so map that in read-only.
-  bind_in_cordon(READONLY, home_path(user, "Pictures"));
-
-  // Make the profile directory if it doesn't exist.
-  char profile_dir[512];
-  snprintf(profile_dir, 512, ".browser-cordon/%s", profile);
-  mkdir_user_owned(home_path(user, ".browser-cordon"), 0700, user);
-  mkdir_user_owned(home_path(user, profile_dir), 0700, user);
-
-  // Bind in the specific profile.
-  bind_in_cordon(EMPTY, home_path(user, ".browser-cordon"));
-  bind_in_cordon(FULL, home_path(user, profile_dir));
+void usage(const char* self) {
+  fprintf(stderr,
+      "usage: %1$s NAME OPTIONS COMMAND\n"
+      "\n"
+      "Runs COMMAND inside the home directory container with the given name.\n"
+      "Within the container, your real home directory will be invisible (modulo\n"
+      "options below), replaced by a directory that starts out empty, but which\n"
+      "persists across runs with the same container name.\n"
+      "\n"
+      "Hint: You can maintain multiple browser \"profiles\" (logged into\n"
+      "different accounts) by running the same browser in different containers.\n"
+      "\n"
+      "Options:\n"
+      "    -r <dir>  Make <dir> from your real homedir accessible in the\n"
+      "              container read-only.\n"
+      "    -w <dir>  Make <dir> from your real homedir accessible in the\n"
+      "              container with full access.\n"
+      "    -h <dir>  Hide <dir>, a subdirectory of a <dir> passed to a previous\n"
+      "              -w or -r. This makes the directory inaccessible in the\n"
+      "              container (it will appear empty and unwritable).\n"
+      "\n"
+      "Example:\n"
+      "    %1$s browser -w Downloads google-chrome\n"
+      "        Runs Google Chrome in a container but lets it put downloads in\n"
+      "        your real \"Downloads\" directory.\n", self);
 }
 
-void run_chrome(struct passwd* user, const char* profile) {
-  char param[512];
-  snprintf(param, 512, "--user-data-dir=/home/%s/.browser-cordon/%s", user->pw_name, profile);
-  sys(execlp("google-chrome", "google-chrome", param, NULL));
-  die("can't get here");
-}
-
-// =======================================================================================
-
-void validate(const char* name) {
-  // Disallow path injection (., .., or anything with a /).
-
-  if (*name == '\0' || strchr(name, '/') != NULL ||
-      strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
-    die("invalid: %s", name);
+void validate_map_path_piece(const char* path, const char* piece) {
+  if (strcmp(piece, "") == 0 ||
+      strcmp(piece, ".") == 0 ||
+      strcmp(piece, "..") == 0) {
+    die("invalid: %s", path);
   }
+}
+
+void validate_map_path(const char* path) {
+  // Disallow path injection (., .., absolute paths) in mappings.
+
+  if (strlen(path) >= 256) {
+    die("too long: %s", path);
+  }
+
+  char copy[256];
+  strcpy(copy, path);
+
+  const char* piece = copy;
+  for (char* pos = copy; *pos != '\0'; ++pos) {
+    if (*pos == '/') {
+      *pos = '\0';
+      // Now `piece` points to just one path component.
+      validate_map_path_piece(path, piece);
+      piece = pos + 1;
+    }
+  }
+  validate_map_path_piece(path, piece);
 }
 
 int main(int argc, const char* argv[]) {
-  if (argc > 2) {
-    fprintf(stderr, "usage: %s [profile-name]\n", argv[0]);
+  if (argc < 1) die("no argv[0]?");  // shouldn't happen
+  const char* self = argv[0];
+  --argc;
+  ++argv;
+
+  if (argc < 1 || argv[0][0] == '-') {
+    usage(self);
     return 1;
   }
-  const char* profile = argc < 2 ? "default" : argv[1];
+  const char* container_name = argv[0];
+  --argc;
+  ++argv;
 
-  validate(profile);
+  // Disallow path injection in container name (., .., or anything with a /).
+  //
+  // Also disallow overly long values as this is C and I'm too lazy to dynamically allocate
+  // strings.
+  if (*container_name == '\0' || strchr(container_name, '/') != NULL ||
+      strcmp(container_name, ".") == 0 || strcmp(container_name, "..") == 0 ||
+      strlen(container_name) > 128) {
+    die("invalid: %s", container_name);
+  }
 
   // Check that we are suid-root, but were not executed by root.
   // TODO: Once Chrome supports uid namespaces rather than using a setuid sandbox, we
@@ -278,6 +318,11 @@ int main(int argc, const char* argv[]) {
   // Get username of the user who executed us.
   struct passwd* user = getpwuid(ruid);
   if (user == NULL) die("getpwuid() failed");
+  if (strlen(user->pw_name) > 128) {
+    // This is C and I'm too lazy to allocate strings dynamically so let's just prevent ridiculous
+    // usernames.
+    die("username too long");
+  }
 
   // Enter a private mount namespace.
   // TODO: Also unshare PID namespace. Requires mounting our own /proc and acting as init.
@@ -302,10 +347,42 @@ int main(int argc, const char* argv[]) {
 
   // Hide /home, then we'll bring back the specific things we need.
   hide_in_cordon("/home");
-  bind_in_cordon(EMPTY, home_path(user, ""));
 
-  // Bind in the stuff Chrome needs.
-  setup_chrome(user, profile);
+  // Make the container directory if it doesn't exist, then bind it as the home directory.
+  mkdir_user_owned(home_path(user, ".browser-cordon"), 0700, user);
+  char container_dir[512];
+  snprintf(container_dir, 512, "/home/%s/.browser-cordon/%s", user->pw_name, container_name);
+  mkdir_user_owned(container_dir, 0700, user);
+  bind(FULL, container_dir, home_path(user, NULL) + 1);
+
+  // Interpret options.
+  while (argc > 0 && argv[0][0] == '-') {
+    if (strcmp(argv[0], "-w") == 0 && argc > 1) {
+      validate_map_path(argv[1]);
+      bind_in_cordon(FULL, home_path(user, argv[1]));
+      argc -= 2;
+      argv += 2;
+    } else if (strcmp(argv[0], "-r") == 0 && argc > 1) {
+      validate_map_path(argv[1]);
+      bind_in_cordon(READONLY, home_path(user, argv[1]));
+      argc -= 2;
+      argv += 2;
+    } else if (strcmp(argv[0], "-h") == 0 && argc > 1) {
+      validate_map_path(argv[1]);
+      hide_in_cordon(home_path(user, argv[1]));
+      argc -= 2;
+      argv += 2;
+    } else {
+      usage(self);
+      return 1;
+    }
+  }
+
+  if (argc == 0) {
+    fprintf(stderr, "missing command");
+    usage(self);
+    return 1;
+  }
 
   // Use pivot_root() to replace our root directory with the tree we built in /tmp. This is
   // more secure than chroot().
@@ -320,6 +397,9 @@ int main(int argc, const char* argv[]) {
   // Drop privileges.
   sys(setresuid(ruid, ruid, ruid));
 
-  // Execute Chrome!
-  run_chrome(user, profile);
+  assert(argv[argc] == NULL);
+
+  // Execute!
+  sys(execvp(argv[0], (char**)argv));
+  die("can't get here");
 }

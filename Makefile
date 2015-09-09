@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-Wall -O2
+CFLAGS=-Wall -Os -g
 
 browser-cordon: browser-cordon.nosuid
 	# We need to make the binary suid-root to set up the sandbox.
