@@ -29,7 +29,9 @@ I am not in any way affiliated with Google or Chrome.
 
 ### Why run Chrome in a container?
 
-The purpose of this program is to add an additional layer of defense against possible bugs in Chrome. In particular, it defends against bugs that might otherwise allow a remote attacker to read sensitive files from your hard drive. Such a bug could be used, for example, to steal SSH or PGP private keys. [A bug of this nature was recently found in Firefox.](https://blog.mozilla.org/security/2015/08/06/firefox-exploit-found-in-the-wild/)
+Your web browser is the most likely entry point to your desktop for a remote attacker. You use it to connect to random untrusted servers far more often than any other program, and the things it does with the data obtained from those server are far more complex than any other program. Your browser is also likely the program you run whose developers have taken the most care to ensure that it is secure -- but no one is perfect.
+
+The purpose of `chrome-container` is to add an additional layer of defense against possible bugs in Chrome. In particular, it defends against bugs that might otherwise allow a remote attacker to read sensitive files from your hard drive. Such a bug could be used, for example, to steal SSH or PGP private keys. [A bug of this nature was recently found in Firefox.](https://blog.mozilla.org/security/2015/08/06/firefox-exploit-found-in-the-wild/)
 
 ### Why only Chrome? Why not other browsers?
 
