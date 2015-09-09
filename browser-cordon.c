@@ -42,17 +42,17 @@
 void stack_trace(int skip) {
   void* trace[32];
   int size = backtrace(trace, 32);
-  
+
   char exe[128];
   snprintf(exe, 128, "/proc/%d/exe", getpid());
-  
+
   pid_t child = fork();
   if (child == 0) {
     char* cmd[36];
     cmd[0] = "addr2line";
     cmd[1] = "-e";
     cmd[2] = exe;
-  
+
     char addrs[64][32];
     int i;
     for (i = 0; i < size - skip; i++) {
@@ -60,12 +60,12 @@ void stack_trace(int skip) {
       cmd[3 + i] = addrs[i];
     }
     cmd[3 + size - skip] = NULL;
-  
+
     execvp("addr2line", cmd);
     perror("addr2line");
     exit(1);
   }
-  
+
   int status;
   waitpid(child, &status, 0);
 }
@@ -136,7 +136,7 @@ void bind(enum bind_type type, const char* src, const char* dst) {
       sys(mknod(dst, S_IFREG | 0777, 0));
       break;
   }
-  
+
   if (type == EMPTY) {
     // Don't bind, just copy permissions.
     struct stat stats;
@@ -213,14 +213,14 @@ void setup_chrome(struct passwd* user, const char* profile) {
   bind_in_container(EMPTY, home_path(user, ".local"));
   bind_in_container(READONLY, home_path(user, ".local/share"));
   bind_in_container(READONLY, home_path(user, ".config"));
-  
+
   // libnss certificate store -- needs to be writable so that you can edit certificates in
   // Chrome's settings.
   bind_in_container(FULL, home_path(user, ".pki"));
-  
+
   // The browser needs to write to Downloads, obviously.
   bind_in_container(FULL, home_path(user, "Downloads"));
-  
+
   // I think ~90% of my in-browser uploads are from Pictures, so map that in read-only.
   bind_in_container(READONLY, home_path(user, "Pictures"));
 
@@ -229,7 +229,7 @@ void setup_chrome(struct passwd* user, const char* profile) {
   snprintf(profile_dir, 512, ".chrome-container/%s", profile);
   mkdir_user_owned(home_path(user, ".chrome-container"), 0700, user);
   mkdir_user_owned(home_path(user, profile_dir), 0700, user);
-  
+
   // Bind in the specific profile.
   bind_in_container(EMPTY, home_path(user, ".chrome-container"));
   bind_in_container(FULL, home_path(user, profile_dir));
@@ -266,7 +266,7 @@ int main(int argc, const char* argv[]) {
   // TODO: Once Chrome supports uid namespaces rather than using a setuid sandbox, we
   //   should also switch to using uid namespaces and not require setuid. See:
   //   https://code.google.com/p/chromium/issues/detail?id=312380
-  uid_t ruid, euid, suid;  
+  uid_t ruid, euid, suid;
   sys(getresuid(&ruid, &euid, &suid));
   if (euid != 0) {
     die("binary needs to be setuid to set up sandbox");
@@ -274,16 +274,16 @@ int main(int argc, const char* argv[]) {
   if (ruid == 0) {
     die("please run as non-root");
   }
-  
+
   // Get username of the user who executed us.
   struct passwd* user = getpwuid(ruid);
   if (user == NULL) die("getpwuid() failed");
-  
+
   // Enter a private mount namespace.
   // TODO: Also unshare PID namespace. Requires mounting our own /proc and acting as init.
   // TODO: Also unshare IPC namespace? Or will that screw up desktop interaction?
   sys(unshare(CLONE_NEWNS));
-  
+
   // To really get our own private mount tree, we have to remount root as "private". Otherwise
   // our changes may be propagated to the original mount namespace and ruin everything.
   sys(mount("none", "/", NULL, MS_REC | MS_PRIVATE, NULL));
@@ -295,15 +295,15 @@ int main(int argc, const char* argv[]) {
   // We'll set the container root as our current directory so that the _in_container() helpers
   // work.
   sys(chdir("/tmp"));
-  
+
   // Stuff in /var probably shouldn't be visible in the container, except /var/tmp.
   hide_in_container("/var");
   bind_in_container(FULL, "/var/tmp");
-  
+
   // Hide /home, then we'll bring back the specific things we need.
   hide_in_container("/home");
   bind_in_container(EMPTY, home_path(user, ""));
-  
+
   // Bind in the stuff Chrome needs.
   setup_chrome(user, profile);
 
