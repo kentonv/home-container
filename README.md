@@ -1,8 +1,11 @@
-# Browser Cordon
+# Home Container
 
-This is a little program which runs Google Chrome inside of a Linux mount namespace (often used to implement "containers") in which most of your home directory is hidden from it.
+This is a little program which "containerizes your home directory" -- that is, it runs programs in containers which replace your home directory with a container-private directory. The main intended use case is your web browser. This has two main uses:
 
-Additionally, it is possible to run multiple Chrome profiles simultaneously such that each instance can only see its own profile's data (e.g. cookies), not the data of any other profile.
+1. **Hide your sensitive files from apps that don't need them.** For example, [a recent Firefox bug](https://blog.mozilla.org/security/2015/08/06/firefox-exploit-found-in-the-wild/) allowed remote exfiltration of files from the local filesystem and was used in the wild to collect SSH private keys; using a home container would prevent this bug from finding said keys.
+2. **Run a program with multiple "profiles", even if the program itself doesn't support any notion of "profiles".** For instance, you can use two different browser profiles to log into the same web site using two different accounts at the same time. (Browsers typically have built-in support for this, but by using home containters instead you get added security: a browser breach in one profile will have a harder time stealing cookies from another profile.)
+
+Note that a home container is **not a sandbox**. An attacker who can run arbitrary code can easily break out of the container in a number of ways. However, bugs which allow filesystem exfiltration _without_ allowing arbitrary code execution are common, due in part to the complexity of the web platform: there are many situations in which Javascript running in your browser is _supposed_ to be able to read your filesystem, meaning there are lots of chances for the browser to screw up. There are comparatively few situations where Javascript is supposed to be able to execute non-sandboxed code, and comparatively lots of effort spent making sure it can't.
 
 ## Dependencies
 
@@ -13,35 +16,24 @@ Linux, Chrome, `gcc`, and `make`.
 ## Usage
 
 1. Build with `make`. Note that you will be prompted for your sudo password in order to make the binary suid-root (see FAQ below for why).
-2. Move (don't copy, lest you lose the suid bit) the `browser-cordon` binary to somewhere in your `PATH`.
-3. Run `browser-cordon` to start Chrome in a cordon.
-4. To create multiple profiles, specify a profile name as a command-line parameter to `browser-cordon`. (The default is `default`.)
+2. Move (don't copy, lest you lose the suid bit) the `home-container` binary to somewhere in your `PATH`.
+3. Run `home-container name command` to run `command` in a container named `name`. Everything you run in the same-named container will see the same version of your home directory, which starts out empty.
 
-Your profiles will be stored under `~/.browser-cordon`.
+Your containers will be stored under `~/.home-container` in your real home directory.
+
+You can optionally map directories from your real home directory into the container with the `-w` (writable) and `-r` (read-only) flags; run with `--help` for details.
 
 ## Author
 
-I, [Kenton Varda](https://keybase.io/kentonv), am the lead developer of [Sandstorm.io](https://sandstorm.io), a ridiculously secure (and radically easier) way to run web apps on your own server. If `browser-cordon` interests you, you may also be interested in reading about [Sandstorm's security model](https://docs.sandstorm.io/en/latest/developing/security-practices/).
-
-I am not in any way affiliated with Google or Chrome.
+I, [Kenton Varda](https://keybase.io/kentonv), am the lead developer of [Sandstorm.io](https://sandstorm.io), a ridiculously secure (and radically easier) way to run web apps on your own server. If `home-container` interests you, you may also be interested in reading about [Sandstorm's security model](https://docs.sandstorm.io/en/latest/developing/security-practices/).
 
 ## FAQ
 
-### Why cordon your browser?
+### Why run your browser in a container?
 
 Your web browser is the most likely entry point to your desktop for a remote attacker. You use it to connect to random untrusted servers far more often than any other program, and the things it does with the data obtained from those server are far more complex than any other program. Your browser is also likely the program you run whose developers have taken the most care to ensure that it is secure -- but no one is perfect.
 
-The purpose of `browser-cordon` is to add an additional layer of defense against possible bugs in Chrome. In particular, it defends against bugs that might otherwise allow a remote attacker to read sensitive files from your hard drive. Such a bug could be used, for example, to steal SSH or PGP private keys. [A bug of this nature was recently found in Firefox.](https://blog.mozilla.org/security/2015/08/06/firefox-exploit-found-in-the-wild/)
-
-### Why only Chrome? Why not other browsers?
-
-I personally use Chrome because I am most confident in its security model. Their sandboxing techniques go far beyond any other browser. The Chrome team is regularly pushing the boundaries of Linux security (e.g. creating seccomp-bpf, a Linux kernel feature that is now critical to Sandstorm).
-
-However, this code could probably easily be adapted to other major browsers as well, and I would be happy to accept patches along those lines.
-
-### Does this use Docker/Rocket/OCI/LXC/etc.?
-
-No. It uses the raw Linux system calls on which all of those are based. This code has no dependencies.
+The purpose of `home-container` is to add an additional layer of defense against possible bugs in your browser. In particular, it defends against bugs that might otherwise allow a remote attacker to read sensitive files from your hard drive. Such a bug could be used, for example, to steal SSH or PGP private keys. [A bug of this nature was recently found in Firefox.](https://blog.mozilla.org/security/2015/08/06/firefox-exploit-found-in-the-wild/)
 
 ### What directories can the browser still see?
 
@@ -61,42 +53,60 @@ Everything outside of `/home` will be visible but mounted read-only, except for 
 
 Yes. But, you can reduce risk by using different profiles to log into sensitive sites vs. suspicious sites. Each profile will only be able to see its own cookies.
 
-### What about running Chrome in a VM?
+### Why not use a VM?
 
-You could do that, but a VM is much more costly in terms of resources, and will likely run slower. The namespace approach has essentially zero performance overhead.
+You could do that, but a VM is much more costly in terms of resources, and will likely run slower. The namespace approach has essentially zero performance overhead. Also, see the next question.
 
-### What about running Chrome under Docker (or some other "container" engine)?
+### Why not use Docker/Rocket/OCI/LXC/etc.?
 
-This would add a lot of complication for little gain. Normally the purpose of a container is to prevent an application from interacting with the rest of the system -- it gets its own copies of libraries, private IPC, etc. But you _want_ Chrome to interact with your desktop, and you _want_ it to be able to use your graphics drivers, etc. You really don't want it to have its own libraries. You just want to keep it away from sensitive files.
+Those container engines are meant for containerizing the _entire_ filesystem, not just your home directory. For desktop apps, that's not normally what you want: you actually want the app to communicate with the rest of your desktop, use the correct graphics drivers, etc.
 
-### What about using SELinux?
+### Why not use SELinux?
 
-SELinux can indeed achieve a similar effect to browser-cordon, using a very different approach. I generally feel more comfortable with the cordon approach, but this may be a matter of taste.
+SELinux implements access control, not containerization. You could perhaps use it to limit what apps can see your SSH keys, but you cannot use it to create an entirely new, empty workspace for an app or implement "profiles".
 
-### Doesn't Chrome have its own sandbox?
+You can, of course, stack SELinux policies on top of home-container for even more protection.
 
-Yes, and it's a good one. But, the web platform is large and complicated.
+### Why not use Firejail?
 
-For example, scripts loaded by HTML files on your hard drive (`file:` scheme) have the ability to read other files from the local drive. That means that Chrome's sandbox has to implement the ability for scripts to read files, and then has to implement policy to decide when they are allowed to do so. That policy could have bugs.
+[Firejail](https://github.com/netblue30/firejail) is a much more advanced attempt to solve similar problems. Unlike home-container, Firejail actually aims to be a sandbox that arbitrary code cannot break out of, and they have implemented quite a few measures in that direction. The project is definitely worth keeping an eye on as an eventual way to securely sandbox arbitrary apps.
+
+However, as it stands today, Firejail's sandboxing probably does not provide much practical security compared to home-container, because:
+
+* Out-of-the-box, Firejail's sandbox is not complete. For example, as of this writing, [they do not isolate X11](https://github.com/netblue30/firejail/issues/57). Any X app can arbitrarily keylog and spoof events to any other X app on the same desktop, making it trivial for a desktop app to break out of the sandbox. With careful setup involving `xpra` you might be able to make something secure, but there's a lot of complexity here that's easy to screw up. Usually, for sandboxing to be practical, you need a platform that is designed for it -- the web platform is, whereas the Linux desktop platform is not.
+
+* Currently, it is not possible to run Chrome inside a seccomp sandbox, as doing so would break Chrome's own ability to create its own sandbox, due to its current suid-sandbox approach. Therefore, Firejail's default configuration for Chrome does not set up much of a sandbox at all. (Chrome, of course, sets up its own seccomp sandbox internally. Chrome literally invented seccomp-bpf sandboxing.)
+
+Meanwhile, Firejail has some disadvantages vs. home-container:
+
+* Firejail configs appear to be blacklist-y rather than whitelist-y. If you have secrets stored in your home directory that Firejail doesn't know about, they won't be hidden.
+
+* home-container is small enough that you could actually review it line-by-line. Firejail is not.
+
+### Doesn't my browser have its own sandbox?
+
+Yes. But, the web platform is large and complicated.
+
+For example, scripts loaded by HTML files on your hard drive (`file:` scheme) have the ability to read other files from the local drive. That means that your browser's sandbox has to implement the ability for scripts to read files, and then has to implement policy to decide when they are allowed to do so. That policy could have bugs.
 
 Or perhaps more likely, an extension might request local file access permission. If that extension has bugs, a malicious web site might trick it into uploading files from your system.
 
-`browser-cordon` is only a few hundred lines of C code with no dependencies. It implements a simple policy which can easily be reviewed in full. Using it adds an additional layer of defense in case of bugs in Chrome itself.
+`home-container` is only a few hundred lines of C code with no dependencies. It implements a simple policy which is easily understood and can easily be reviewed in full. Using it adds an additional layer of defense in case of certain types of bugs in the browser itself. It cannot defend against all browser bugs, but it can defend against at least some kinds of bugs actually seen in the wild.
 
 ### Does this mitigate arbitrary code execution exploits?
 
 Not really.
 
-A hypothetical memory bug in Chrome could still allow an attacker to execute code outside the Chrome sandbox. The code would still be stuck inside `browser-cordon`. However, if the attacker is aware of this, they likely could use any number of different Linux privilege escalation exploits to break out of it. `browser-cordon` currently does not install a seccomp filter nor set `NO_NEW_PRIVS` because doing so would break Chrome's own sandboxing (see next question), so cannot stop the kind of local privilege escalation exploits that are found in Linux on an almost weekly basis. Once the attacker has root privileges, they can trivially exit the cordon.
+A hypothetical memory bug in Chrome could still allow an attacker to execute code outside the Chrome sandbox. The code would still be stuck inside `home-container`. However, if the attacker is aware of this, they likely could use any number of different Linux privilege escalation exploits to break out of it. `home-container` currently does not install a seccomp filter nor set `NO_NEW_PRIVS` because doing so would break Chrome's own sandboxing (see next question), so cannot stop the kind of local privilege escalation exploits that are found in Linux on an almost weekly basis. Once the attacker has root privileges, they can trivially exit the container.
 
-Of course, `browser-cordon` may provide some security-by-obscurity here: if the attacker does not expect to be stuck in a cordon, they probably won't know to break out of it.
+Of course, `home-container` may provide some security-by-obscurity here: if the attacker does not expect to be stuck in a container, they probably won't know to break out of it.
 
 ### Why does it need to be suid-root?
 
 Historically, setting up Linux mount namespaces has required root privileges. Because of this, Chrome itself uses a setuid binary to set up its own sandbox.
 
-However, since approximately kernel version 3.12, it is now possible to use "user namespaces" to create namespaces without root privileges. Unfortunately, though, inside such a user namespace, setuid binaries won't work, and therefore if we ran Chrome in such a namespace, Chrome's own sandbox would break. We obviously don't want that, therefore browser-cordon itself uses the setuid approach for now, to avoid breaking Chrome.
+However, since approximately kernel version 3.12, it is now possible to use "user namespaces" to create namespaces without root privileges. Unfortunately, though, inside such a user namespace, setuid binaries won't work, and therefore if we ran Chrome in such a namespace, Chrome's own sandbox would break. We obviously don't want that, therefore home-container itself uses the setuid approach for now, to avoid breaking Chrome.
 
-The Chrome team is currently working on transitioning to user namespaces. Once they do, `browser-cordon` will be updated to no longer require suid-root (and could also perhaps enable seccomp filtering and `NO_NEW_PRIVS` as mentioned in the previous question). See: https://code.google.com/p/chromium/issues/detail?id=312380
+The Chrome team is currently working on transitioning to user namespaces. Once they do, `home-container` will be updated to no longer require suid-root (and could also perhaps enable seccomp filtering and `NO_NEW_PRIVS` as mentioned in the previous question). See: https://code.google.com/p/chromium/issues/detail?id=312380
 
-While I do not think `browser-cordon`'s suid privileges can be exploited, I nevertheless do not recommend installing `browser-cordon` as a suid binary on a multi-user machine with possibly-malicious users, as I have not been focusing on this threat model.
+While I do not think `home-container`'s suid privileges can be exploited, I nevertheless do not recommend installing `home-container` as a suid binary on a multi-user machine with possibly-malicious users, as I have not been focusing on this threat model.

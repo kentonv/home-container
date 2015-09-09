@@ -172,9 +172,9 @@ void hide(const char* dst) {
   }
 }
 
-void bind_in_cordon(enum bind_type type, const char* path) {
-  // Assuming the current directory is where we're setting up the cordon, bind the
-  // given absolute path from outside the cordon to the same path inside.
+void bind_in_container(enum bind_type type, const char* path) {
+  // Assuming the current directory is where we're setting up the container, bind the
+  // given absolute path from outside the container to the same path inside.
 
   assert(path[0] == '/');
 
@@ -185,7 +185,7 @@ void bind_in_cordon(enum bind_type type, const char* path) {
   if (slashPos != NULL) {
     *slashPos = '\0';
     if (access(parent + 1, F_OK) != 0) {
-      bind_in_cordon(EMPTY, parent);
+      bind_in_container(EMPTY, parent);
     }
   }
 
@@ -193,9 +193,9 @@ void bind_in_cordon(enum bind_type type, const char* path) {
   bind(type, path, path + 1);
 }
 
-void hide_in_cordon(const char* path) {
-  // Assuming the current directory is where we're setting up the cordon, hide the given
-  // absolute path inside the cordon.
+void hide_in_container(const char* path) {
+  // Assuming the current directory is where we're setting up the container, hide the given
+  // absolute path inside the container.
 
   assert(path[0] == '/');
   hide(path + 1);
@@ -230,8 +230,8 @@ void usage(const char* self) {
       "options below), replaced by a directory that starts out empty, but which\n"
       "persists across runs with the same container name.\n"
       "\n"
-      "Hint: You can maintain multiple browser \"profiles\" (logged into\n"
-      "different accounts) by running the same browser in different containers.\n"
+      "Hint: You can maintain multiple \"profiles\" (different configurations\n"
+      "of the same app) by running the same app in multiple containers.\n"
       "\n"
       "Options:\n"
       "    -r <dir>  Make <dir> from your real homedir accessible in the\n"
@@ -286,7 +286,7 @@ int main(int argc, const char* argv[]) {
 
   if (argc < 1 || argv[0][0] == '-') {
     usage(self);
-    return 1;
+    return strcmp(argv[0], "--help");
   }
   const char* container_name = argv[0];
   --argc;
@@ -337,21 +337,21 @@ int main(int argc, const char* argv[]) {
   sys(mount("/", "/tmp", NULL, MS_BIND | MS_REC, NULL));
   sys(mount("/", "/tmp", NULL, MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL));
 
-  // We'll set the cordon root as our current directory so that the _in_cordon() helpers
+  // We'll set the container root as our current directory so that the _in_container() helpers
   // work.
   sys(chdir("/tmp"));
 
-  // Stuff in /var probably shouldn't be visible in the cordon, except /var/tmp.
-  hide_in_cordon("/var");
-  bind_in_cordon(FULL, "/var/tmp");
+  // Stuff in /var probably shouldn't be visible in the container, except /var/tmp.
+  hide_in_container("/var");
+  bind_in_container(FULL, "/var/tmp");
 
   // Hide /home, then we'll bring back the specific things we need.
-  hide_in_cordon("/home");
+  hide_in_container("/home");
 
   // Make the container directory if it doesn't exist, then bind it as the home directory.
-  mkdir_user_owned(home_path(user, ".browser-cordon"), 0700, user);
+  mkdir_user_owned(home_path(user, ".home-container"), 0700, user);
   char container_dir[512];
-  snprintf(container_dir, 512, "/home/%s/.browser-cordon/%s", user->pw_name, container_name);
+  snprintf(container_dir, 512, "/home/%s/.home-container/%s", user->pw_name, container_name);
   mkdir_user_owned(container_dir, 0700, user);
   bind(FULL, container_dir, home_path(user, NULL) + 1);
 
@@ -359,19 +359,22 @@ int main(int argc, const char* argv[]) {
   while (argc > 0 && argv[0][0] == '-') {
     if (strcmp(argv[0], "-w") == 0 && argc > 1) {
       validate_map_path(argv[1]);
-      bind_in_cordon(FULL, home_path(user, argv[1]));
+      bind_in_container(FULL, home_path(user, argv[1]));
       argc -= 2;
       argv += 2;
     } else if (strcmp(argv[0], "-r") == 0 && argc > 1) {
       validate_map_path(argv[1]);
-      bind_in_cordon(READONLY, home_path(user, argv[1]));
+      bind_in_container(READONLY, home_path(user, argv[1]));
       argc -= 2;
       argv += 2;
     } else if (strcmp(argv[0], "-h") == 0 && argc > 1) {
       validate_map_path(argv[1]);
-      hide_in_cordon(home_path(user, argv[1]));
+      hide_in_container(home_path(user, argv[1]));
       argc -= 2;
       argv += 2;
+    } else if (strcmp(argv[0], "--help") == 0) {
+      usage(self);
+      return 0;
     } else {
       usage(self);
       return 1;

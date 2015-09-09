@@ -1,13 +1,13 @@
 CC=gcc
 CFLAGS=-Wall -Os -g
 
-browser-cordon: browser-cordon.nosuid
+home-container: home-container.nosuid
 	# We need to make the binary suid-root to set up the sandbox.
-	sudo cp browser-cordon.nosuid browser-cordon
-	sudo chmod u+s browser-cordon
+	sudo cp home-container.nosuid home-container
+	sudo chmod u+s home-container
 
-browser-cordon.nosuid: browser-cordon.c
-	$(CC) -std=c99 $(CFLAGS) browser-cordon.c -o browser-cordon.nosuid
+home-container.nosuid: home-container.c
+	$(CC) -std=c99 $(CFLAGS) home-container.c -o home-container.nosuid
 
 clean:
-	rm -f browser-cordon browser-cordon.nosuid
+	rm -f home-container home-container.nosuid
