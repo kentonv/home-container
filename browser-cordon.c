@@ -175,17 +175,17 @@ void hide(const char* dst) {
   }
 }
 
-void bind_in_container(enum bind_type type, const char* path) {
-  // Assuming the current directory is where we're setting up the container, bind the
-  // given absolute path from outside the container to the same path inside.
+void bind_in_cordon(enum bind_type type, const char* path) {
+  // Assuming the current directory is where we're setting up the cordon, bind the
+  // given absolute path from outside the cordon to the same path inside.
 
   assert(path[0] == '/');
   bind(type, path, path + 1);
 }
 
-void hide_in_container(const char* path) {
-  // Assuming the current directory is where we're setting up the container, hide the given
-  // absolute path inside the container.
+void hide_in_cordon(const char* path) {
+  // Assuming the current directory is where we're setting up the cordon, hide the given
+  // absolute path inside the cordon.
 
   assert(path[0] == '/');
   hide(path + 1);
@@ -210,34 +210,34 @@ const char* home_path(struct passwd* user, const char* path) {
 
 void setup_chrome(struct passwd* user, const char* profile) {
   // Chrome reads system config stuff from ~/.local/share and ~/.config.
-  bind_in_container(EMPTY, home_path(user, ".local"));
-  bind_in_container(READONLY, home_path(user, ".local/share"));
-  bind_in_container(READONLY, home_path(user, ".config"));
+  bind_in_cordon(EMPTY, home_path(user, ".local"));
+  bind_in_cordon(READONLY, home_path(user, ".local/share"));
+  bind_in_cordon(READONLY, home_path(user, ".config"));
 
   // libnss certificate store -- needs to be writable so that you can edit certificates in
   // Chrome's settings.
-  bind_in_container(FULL, home_path(user, ".pki"));
+  bind_in_cordon(FULL, home_path(user, ".pki"));
 
   // The browser needs to write to Downloads, obviously.
-  bind_in_container(FULL, home_path(user, "Downloads"));
+  bind_in_cordon(FULL, home_path(user, "Downloads"));
 
   // I think ~90% of my in-browser uploads are from Pictures, so map that in read-only.
-  bind_in_container(READONLY, home_path(user, "Pictures"));
+  bind_in_cordon(READONLY, home_path(user, "Pictures"));
 
   // Make the profile directory if it doesn't exist.
   char profile_dir[512];
-  snprintf(profile_dir, 512, ".chrome-container/%s", profile);
-  mkdir_user_owned(home_path(user, ".chrome-container"), 0700, user);
+  snprintf(profile_dir, 512, ".browser-cordon/%s", profile);
+  mkdir_user_owned(home_path(user, ".browser-cordon"), 0700, user);
   mkdir_user_owned(home_path(user, profile_dir), 0700, user);
 
   // Bind in the specific profile.
-  bind_in_container(EMPTY, home_path(user, ".chrome-container"));
-  bind_in_container(FULL, home_path(user, profile_dir));
+  bind_in_cordon(EMPTY, home_path(user, ".browser-cordon"));
+  bind_in_cordon(FULL, home_path(user, profile_dir));
 }
 
 void run_chrome(struct passwd* user, const char* profile) {
   char param[512];
-  snprintf(param, 512, "--user-data-dir=/home/%s/.chrome-container/%s", user->pw_name, profile);
+  snprintf(param, 512, "--user-data-dir=/home/%s/.browser-cordon/%s", user->pw_name, profile);
   sys(execlp("google-chrome", "google-chrome", param, NULL));
   die("can't get here");
 }
@@ -292,17 +292,17 @@ int main(int argc, const char* argv[]) {
   sys(mount("/", "/tmp", NULL, MS_BIND | MS_REC, NULL));
   sys(mount("/", "/tmp", NULL, MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL));
 
-  // We'll set the container root as our current directory so that the _in_container() helpers
+  // We'll set the cordon root as our current directory so that the _in_cordon() helpers
   // work.
   sys(chdir("/tmp"));
 
-  // Stuff in /var probably shouldn't be visible in the container, except /var/tmp.
-  hide_in_container("/var");
-  bind_in_container(FULL, "/var/tmp");
+  // Stuff in /var probably shouldn't be visible in the cordon, except /var/tmp.
+  hide_in_cordon("/var");
+  bind_in_cordon(FULL, "/var/tmp");
 
   // Hide /home, then we'll bring back the specific things we need.
-  hide_in_container("/home");
-  bind_in_container(EMPTY, home_path(user, ""));
+  hide_in_cordon("/home");
+  bind_in_cordon(EMPTY, home_path(user, ""));
 
   // Bind in the stuff Chrome needs.
   setup_chrome(user, profile);

@@ -1,13 +1,13 @@
 CC=gcc
 CFLAGS=-Wall -O2
 
-chrome-container: chrome-container.nosuid
-	@echo "*** We need to make the binary suid-root to set up the sandbox."
-	sudo cp chrome-container.nosuid chrome-container
-	sudo chmod u+s chrome-container
+browser-cordon: browser-cordon.nosuid
+	# We need to make the binary suid-root to set up the sandbox.
+	sudo cp browser-cordon.nosuid browser-cordon
+	sudo chmod u+s browser-cordon
 
-chrome-container.nosuid: chrome-container.c
-	$(CC) -std=c99 $(CFLAGS) chrome-container.c -o chrome-container.nosuid
+browser-cordon.nosuid: browser-cordon.c
+	$(CC) -std=c99 $(CFLAGS) browser-cordon.c -o browser-cordon.nosuid
 
 clean:
-	rm -f chrome-container chrome-container.nosuid
+	rm -f browser-cordon browser-cordon.nosuid
