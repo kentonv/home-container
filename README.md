@@ -9,7 +9,7 @@ Note that a home container is **not a sandbox**. An attacker who can run arbitra
 
 ## Dependencies
 
-Linux, Chrome, `gcc`, and `make`.
+Linux, `gcc`, and `make`.
 
 (That's it.)
 
@@ -23,7 +23,7 @@ Your containers will be stored under `~/.home-container` in your real home direc
 
 You can optionally map directories from your real home directory into the container with the `-w` (writable) and `-r` (read-only) flags; run with `--help` for details.
 
-For the specific purpose of running Google Chrome or Chromium, try the included shell script, `chrome-container-launcher.sh`; see comments in the script file for details.
+For the specific purpose of running a browser, try the included shell script, `browser-container-launcher.sh`; see comments in the script file for details.
 
 ## Author
 
