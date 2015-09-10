@@ -75,7 +75,7 @@ However, as it stands today, Firejail's sandboxing probably does not provide muc
 
 * Out-of-the-box, Firejail's sandbox is not complete. For example, as of this writing, [they do not isolate X11](https://github.com/netblue30/firejail/issues/57). Any X app can arbitrarily keylog and spoof events to any other X app on the same desktop, making it trivial for a desktop app to break out of the sandbox. With careful setup involving `xpra` you might be able to make something secure, but there's a lot of complexity here that's easy to screw up. Usually, for sandboxing to be practical, you need a platform that is designed for it -- the web platform is, whereas the Linux desktop platform is not.
 
-* Currently, it is not possible to run Chrome inside a seccomp sandbox, as doing so would break Chrome's own ability to create its own sandbox, due to its current suid-sandbox approach. Therefore, Firejail's default configuration for Chrome does not set up much of a sandbox at all. (Chrome, of course, sets up its own seccomp sandbox internally. Chrome literally invented seccomp-bpf sandboxing.)
+* Currently, it is not possible to run Chromium inside a seccomp sandbox, as doing so would break Chromium's own ability to create its own sandbox, due to its current suid-sandbox approach. Therefore, Firejail's default configuration for Chromium does not set up much of a sandbox at all. (Chromium, of course, sets up its own seccomp sandbox internally. The Chrome team literally invented seccomp-bpf sandboxing.)
 
 Meanwhile, Firejail has some disadvantages vs. home-container:
 
@@ -93,20 +93,26 @@ Or perhaps more likely, an extension might request local file access permission.
 
 `home-container` is only a few hundred lines of C code with no dependencies. It implements a simple policy which is easily understood and can easily be reviewed in full. Using it adds an additional layer of defense in case of certain types of bugs in the browser itself. It cannot defend against all browser bugs, but it can defend against at least some kinds of bugs actually seen in the wild.
 
-### Does this mitigate arbitrary code execution exploits?
+### Is home-container a sandbox?
 
-Not really.
+No!
 
-A hypothetical memory bug in Chrome could still allow an attacker to execute code outside the Chrome sandbox. The code would still be stuck inside `home-container`. However, if the attacker is aware of this, they likely could use any number of different Linux privilege escalation exploits to break out of it. `home-container` currently does not install a seccomp filter nor set `NO_NEW_PRIVS` because doing so would break Chrome's own sandboxing (see next question), so cannot stop the kind of local privilege escalation exploits that are found in Linux on an almost weekly basis. Once the attacker has root privileges, they can trivially exit the container.
+Malicious code can escape the container in a number of ways:
 
-Of course, `home-container` may provide some security-by-obscurity here: if the attacker does not expect to be stuck in a container, they probably won't know to break out of it.
+* Hijacking your X session and spoofing keypresses to other apps.
+* Making requests over dbus.
+* Exploiting a bug in the Linux kernel for privilege escalation (new bugs are typically found monthly or even weekly; when did you last reboot?).
+* Exploiting a bug in a suid-root binary on your system (these are also sadly common).
+* Probably many other ways.
+
+Fundamaentally, the Linux desktop platform is not designed to be sandbox-able as-is, and a platform that isn't designed to be sandbox-able likely cannot be forced into any usable sandbox transparently. home-container therefore only aims to protect against bugs in which the app is **not** executing outright malicious code, but rather trusted-but-buggy code is tricked into accessing files it is not supposed to.
 
 ### Why does it need to be suid-root?
 
-Historically, setting up Linux mount namespaces has required root privileges. Because of this, Chrome itself uses a setuid binary to set up its own sandbox.
+Historically, setting up Linux mount namespaces has required root privileges. Because of this, Chromium uses a setuid binary to set up its own sandbox.
 
-However, since approximately kernel version 3.12, it is now possible to use "user namespaces" to create namespaces without root privileges. Unfortunately, though, inside such a user namespace, setuid binaries won't work, and therefore if we ran Chrome in such a namespace, Chrome's own sandbox would break. We obviously don't want that, therefore home-container itself uses the setuid approach for now, to avoid breaking Chrome.
+However, since approximately kernel version 3.12, it is now possible to use "user namespaces" to create namespaces without root privileges. Unfortunately, though, inside such a user namespace, setuid binaries won't work, and therefore if we ran Chromium in such a namespace, Chromium's own sandbox would break. We obviously don't want that, therefore home-container itself uses the setuid approach for now, to avoid breaking Chromium.
 
-The Chrome team is currently working on transitioning to user namespaces. Once they do, `home-container` will be updated to no longer require suid-root (and could also perhaps enable seccomp filtering and `NO_NEW_PRIVS` as mentioned in the previous question). See: https://code.google.com/p/chromium/issues/detail?id=312380
+The Chrome team is currently working on transitioning to user namespaces. Once they do, `home-container` will be updated to no longer require suid-root (and could also perhaps enable some basic sandboxing of its own like seccomp filtering and `NO_NEW_PRIVS`). See: https://code.google.com/p/chromium/issues/detail?id=312380
 
 While I do not think `home-container`'s suid privileges can be exploited, I nevertheless do not recommend installing `home-container` as a suid binary on a multi-user machine with possibly-malicious users, as I have not been focusing on this threat model.

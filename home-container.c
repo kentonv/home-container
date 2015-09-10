@@ -94,6 +94,8 @@ void die(const char* why, ...) {
 // =======================================================================================
 // helpers for setting up mount tree
 
+unsigned long writable_mount_flags = 0;
+
 enum file_type {
   NONEXISTENT,
   NON_DIRECTORY,
@@ -152,6 +154,9 @@ void bind(enum bind_type type, const char* src, const char* dst) {
       // Setting the READONLY flag requires a remount. (If we tried to set it in the
       // first mount it would be silently ignored.)
       sys(mount(src, dst, NULL, MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL));
+    } else if (writable_mount_flags) {
+      // Need to remount to apply writable_mount_flags.
+      sys(mount(src, dst, NULL, MS_REMOUNT | MS_BIND | MS_REC | writable_mount_flags, NULL));
     }
   }
 }
@@ -164,7 +169,7 @@ void hide(const char* dst) {
       return;
     case DIRECTORY:
       // Empty tmpfs.
-      sys(mount("tmpfs", dst, "tmpfs", 0, "size=2M,nr_inodes=4096,mode=755"));
+      sys(mount("tmpfs", dst, "tmpfs", writable_mount_flags, "size=2M,nr_inodes=4096,mode=755"));
       break;
     case NON_DIRECTORY:
       sys(mount("/dev/null", dst, NULL, MS_BIND | MS_REC, NULL));
@@ -234,6 +239,7 @@ void usage(const char* self) {
       "of the same app) by running the same app in multiple containers.\n"
       "\n"
       "Options:\n"
+      "    --nx      Prevent executing files from locations that are writable.\n"
       "    -r <dir>  Make <dir> from your real homedir accessible in the\n"
       "              container read-only.\n"
       "    -w <dir>  Make <dir> from your real homedir accessible in the\n"
@@ -291,6 +297,12 @@ int main(int argc, const char* argv[]) {
   const char* container_name = argv[0];
   --argc;
   ++argv;
+
+  if (argc > 0 && strcmp(argv[0], "--nx") == 0) {
+    writable_mount_flags = MS_NOEXEC;
+    --argc;
+    ++argv;
+  }
 
   // Disallow path injection in container name (., .., or anything with a /).
   //
@@ -372,6 +384,8 @@ int main(int argc, const char* argv[]) {
       hide_in_container(home_path(user, argv[1]));
       argc -= 2;
       argv += 2;
+    } else if (strcmp(argv[0], "--nx") == 0) {
+      die("--nx must be specified before other flags");
     } else if (strcmp(argv[0], "--help") == 0) {
       usage(self);
       return 0;
@@ -395,7 +409,7 @@ int main(int argc, const char* argv[]) {
 
   // Mount a new tmpfs at our new /tmp, since otherwise we're left with a read-only /tmp
   // (that is shared with apps outside the sandbox).
-  sys(mount("tmpfs", "/tmp", "tmpfs", 0, "size=16M,nr_inodes=4096,mode=777"));
+  sys(mount("tmpfs", "/tmp", "tmpfs", writable_mount_flags, "size=16M,nr_inodes=4096,mode=777"));
 
   // Drop privileges.
   sys(setresuid(ruid, ruid, ruid));
