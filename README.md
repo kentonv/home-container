@@ -23,6 +23,8 @@ Your containers will be stored under `~/.home-container` in your real home direc
 
 You can optionally map directories from your real home directory into the container with the `-w` (writable) and `-r` (read-only) flags; run with `--help` for details.
 
+For the specific purpose of running Google Chrome or Chromium, try the included shell script, `chrome-container-launcher.sh`; see comments in the script file for details.
+
 ## Author
 
 I, [Kenton Varda](https://keybase.io/kentonv), am the lead developer of [Sandstorm.io](https://sandstorm.io), a ridiculously secure (and radically easier) way to run web apps on your own server. If `home-container` interests you, you may also be interested in reading about [Sandstorm's security model](https://docs.sandstorm.io/en/latest/developing/security-practices/).
