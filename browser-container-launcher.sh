@@ -11,9 +11,14 @@
 #
 # You need to specify the browser you want (e.g. "google-chrome", "chromium", "firefox") as
 # a parameter to the script.
-BROWSER=$1
 
-LIST=$(cd ~/.home-container && ls -d browser-* | sed -e 's/^browser-//g')
+if [ "$#" -lt 1 ]; then
+  echo "usage: $0 BROWSER_COMMAND" >&2
+  echo "example: $0 chromium" >&2
+  exit 1
+fi
+
+LIST=$(cd ~/.home-container && echo browser-* | sed -e 's/\<browser-//g')
 
 if [ "$LIST" = '*' ]; then
   LIST=
@@ -29,4 +34,4 @@ if [ -z "$PROFILE" ]; then
   exit 0
 fi
 
-exec home-container "browser-$PROFILE" --nx -w Downloads -r Uploads -r Pictures -r .local/share -r .config/fontconfig $BROWSER
+exec home-container "browser-$PROFILE" --nx -w Downloads -r Uploads -r Pictures -r .local/share -r .config/fontconfig "$@"
