@@ -137,7 +137,9 @@ void bind(enum bind_type type, const char* src, const char* dst) {
       break;
     case NON_DIRECTORY:
       // Make an empty regular file to bind over.
-      sys(mknod(dst, S_IFREG | 0777, 0));
+      while (mknod(dst, S_IFREG | 0777, 0) < 0 && errno != EEXIST) {
+        fail_errno_except_eintr("mkdir(dst, 0777)");
+      }
       break;
   }
 
