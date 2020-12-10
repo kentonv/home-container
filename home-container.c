@@ -450,6 +450,17 @@ int main(int argc, const char* argv[]) {
     // Mount procfs that reflects our pid namespace.
     sys(mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL));
 
+    if (access("/usr/bin/nvidia-modprobe", F_OK) == 0) {
+      // If this program exists, the nvidia drivers will attempt to run it, in particular when
+      // setting up a Vulkan context. Normally, it is setuid-root, and will not work correctly
+      // in the sandbox, leading Vulkan setup to fail. Apparently, though, if we simply replace
+      // the program with /usr/bin/true, this is enough to trick the nvidia driver into working
+      // correctly.
+      //
+      // See: https://github.com/containers/bubblewrap/issues/328#issuecomment-571162188
+      sys(mount("/usr/bin/true", "/usr/bin/nvidia-modprobe", NULL, MS_BIND, NULL));
+    }
+
     // Drop privileges.
     sys(setresuid(ruid, ruid, ruid));
 
