@@ -35,6 +35,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <execinfo.h>
+#include <fcntl.h>
 
 // =======================================================================================
 // generic error handling
@@ -68,6 +69,14 @@ void stack_trace(int skip) {
 
   int status;
   waitpid(child, &status, 0);
+
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    fprintf(stderr, "raw trace:");
+    for (int i = skip; i < size; i++) {
+      fprintf(stderr, " %p", (char*)trace[i] - 1);
+    }
+    fprintf(stderr, "\n");
+  }
 }
 
 void fail_errno_except_eintr(const char* code) {
@@ -284,6 +293,16 @@ void validate_map_path(const char* path) {
   validate_map_path_piece(path, piece);
 }
 
+void write_file(const char* filename, const char* content) {
+  int fd = open(filename, O_WRONLY);
+  ssize_t n;
+  sys(n = write(fd, content, strlen(content)));
+  if (n < strlen(content)) {
+    die("incomplete write");
+  }
+  sys(close(fd));
+}
+
 int main(int argc, const char* argv[]) {
   if (argc < 1) die("no argv[0]?");  // shouldn't happen
   const char* self = argv[0];
@@ -320,12 +339,14 @@ int main(int argc, const char* argv[]) {
   //   https://code.google.com/p/chromium/issues/detail?id=312380
   uid_t ruid, euid, suid;
   sys(getresuid(&ruid, &euid, &suid));
-  if (euid != 0) {
-    die("binary needs to be setuid to set up sandbox");
-  }
   if (ruid == 0) {
     die("please run as non-root");
   }
+  if (euid == 0 || suid == 0) {
+    die("please don't use setuid-root binary anymore");
+  }
+
+  gid_t gid = getgid();
 
   // Get username of the user who executed us.
   struct passwd* user = getpwuid(ruid);
@@ -339,7 +360,14 @@ int main(int argc, const char* argv[]) {
   // Enter a private mount namespace.
   // TODO: Also unshare PID namespace. Requires mounting our own /proc and acting as init.
   // TODO: Also unshare IPC namespace? Or will that screw up desktop interaction?
-  sys(unshare(CLONE_NEWNS));
+  sys(unshare(CLONE_NEWUSER | CLONE_NEWNS));
+
+  char user_map[64];
+  write_file("/proc/self/setgroups", "deny\n");
+  snprintf(user_map, 64, "1000 %d 1\n", ruid);
+  write_file("/proc/self/uid_map", user_map);
+  snprintf(user_map, 64, "1000 %d 1\n", gid);
+  write_file("/proc/self/gid_map", user_map);
 
   // To really get our own private mount tree, we have to remount root as "private". Otherwise
   // our changes may be propagated to the original mount namespace and ruin everything.
