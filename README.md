@@ -15,8 +15,8 @@ Linux, `gcc`, and `make`. That's it.
 
 ## Usage
 
-1. Build with `make`. Note that you will be prompted for your sudo password in order to make the binary suid-root (see FAQ below for why).
-2. Move (don't copy, lest you lose the suid bit) the `home-container` binary to somewhere in your `PATH`.
+1. Build with `make`.
+2. Move/copy the `home-container` binary to somewhere in your `PATH`.
 3. Run `home-container name command` to run `command` in a container named `name`. Everything you run in the same-named container will see the same version of your home directory, which starts out empty.
 
 Your containers will be stored under `~/.home-container` in your real home directory.
@@ -72,21 +72,13 @@ SELinux implements access control, not containerization. You could perhaps use i
 
 You can, of course, stack SELinux policies on top of home-container for even more protection.
 
-### Why not use Firejail?
+### Why not use Bubblewrap, Firejail, etc.?
 
-[Firejail](https://github.com/netblue30/firejail) is a much more advanced attempt to solve similar problems. Unlike home-container, Firejail actually aims to be a sandbox that arbitrary code cannot break out of, and they have implemented quite a few measures in that direction. The project is definitely worth keeping an eye on as an eventual way to securely sandbox arbitrary apps.
+[Bubblewrap](https://github.com/containers/bubblewrap) and [Firejail](https://github.com/netblue30/firejail) are much more advanced attempts to solve similar problems.
 
-However, as it stands today, Firejail's sandboxing probably does not provide much practical security compared to home-container, because:
+Both of those projects are likely to provide much stronger security protections than home-container. They have far more features and are actively maintained.
 
-* Out-of-the-box, Firejail's sandbox is not complete. For example, as of this writing, [they do not isolate X11](https://github.com/netblue30/firejail/issues/57). Any X app can arbitrarily keylog and spoof events to any other X app on the same desktop, making it trivial for a desktop app to break out of the sandbox. With careful setup involving running a separate X server for the sandbox with some sort of remote desktop protocol, you might be able to make something secure, but there's a lot of complexity here that's easy to screw up. Usually, for sandboxing to be practical, you need a platform that is designed for it -- the web platform is, whereas the Linux desktop platform is not.
-
-* Currently, it is not possible to run Chromium inside a seccomp sandbox, as doing so would break Chromium's own ability to create its own sandbox, due to its current suid-sandbox approach. Therefore, Firejail's default configuration for Chromium does not set up much of a sandbox at all. (Chromium, of course, sets up its own seccomp sandbox internally. The Chrome team literally invented seccomp-bpf sandboxing.)
-
-Meanwhile, Firejail has some disadvantages vs. home-container:
-
-* Firejail configs appear to be blacklist-y rather than whitelist-y. If you have secrets stored in your home directory that Firejail doesn't know about, they won't be hidden by default.
-
-* home-container is small enough that you could actually review it line-by-line. Firejail is not.
+The main benefit of home-container is that it is extremely simple. It is entirely feasible for you to review the entire source code of home-container in 15 minutes or so before using it. Those other projects are far too large to review. This does not by any means make home-container "better", but it's an interesting property for people who want to learn about containers, want to understand what their tools are doing, or want to keep things simple.
 
 ### Doesn't my browser have its own sandbox?
 
@@ -108,17 +100,6 @@ Malicious native code can escape the container in a number of ways:
 * Making desktop requests over dbus.
 * Talking to your ssh-agent.
 * Exploiting a bug in the Linux kernel for privilege escalation (new bugs are typically found monthly or even weekly; when did you last reboot?).
-* Exploiting a bug in a suid-root binary on your system (these are also sadly common).
 * Probably many other ways.
 
 Fundamaentally, the Linux desktop platform is not designed to be sandbox-able as-is, and a platform that isn't designed to be sandbox-able likely cannot be forced into any usable sandbox transparently. home-container therefore only aims to protect against bugs in which the app is **not** executing outright malicious code, but rather trusted-but-buggy code is tricked into accessing files it is not supposed to.
-
-### Why does it need to be suid-root?
-
-Historically, setting up Linux mount namespaces has required root privileges. Because of this, Chromium uses a setuid binary to set up its own sandbox.
-
-However, since approximately kernel version 3.12, it is now possible to use "user namespaces" to create namespaces without root privileges. Unfortunately, though, inside such a user namespace, setuid binaries won't work, and therefore if we ran Chromium in such a namespace, Chromium's own sandbox would break. We obviously don't want that, therefore home-container itself uses the setuid approach for now, to avoid breaking Chromium.
-
-The Chrome team is currently working on transitioning to user namespaces. Once they do, `home-container` will be updated to no longer require suid-root (and could also perhaps enable some basic sandboxing of its own like seccomp filtering and `NO_NEW_PRIVS`). See: https://code.google.com/p/chromium/issues/detail?id=312380
-
-While I do not think `home-container`'s suid privileges can be exploited, I nevertheless do not recommend installing `home-container` as a suid binary on a multi-user machine with possibly-malicious users, as I have not been focusing on this threat model.
