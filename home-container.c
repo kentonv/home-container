@@ -357,6 +357,12 @@ int main(int argc, const char* argv[]) {
   hide_in_container("/var");
   bind_in_container(FULL, "/var/tmp");
 
+  // Mount /tmp into the sandbox with full access.
+  char tmp_dir[512];
+  snprintf(tmp_dir, 512, "/var/tmp/home-container.%s.%s", user->pw_name, container_name);
+  mkdir_user_owned(tmp_dir, 0700, user);
+  bind(FULL, tmp_dir, "tmp");
+
   // Hide /home, then we'll bring back the specific things we need.
   hide_in_container("/home");
 
@@ -406,10 +412,6 @@ int main(int argc, const char* argv[]) {
   sys(syscall(SYS_pivot_root, "/tmp", "/tmp/tmp"));
   sys(umount2("/tmp", MNT_DETACH));
   chdir("/");
-
-  // Mount a new tmpfs at our new /tmp, since otherwise we're left with a read-only /tmp
-  // (that is shared with apps outside the sandbox).
-  sys(mount("tmpfs", "/tmp", "tmpfs", writable_mount_flags, "size=16M,nr_inodes=4096,mode=777"));
 
   // Drop privileges.
   sys(setresuid(ruid, ruid, ruid));
