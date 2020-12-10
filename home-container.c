@@ -358,9 +358,7 @@ int main(int argc, const char* argv[]) {
   }
 
   // Enter a private mount namespace.
-  // TODO: Also unshare PID namespace. Requires mounting our own /proc and acting as init.
-  // TODO: Also unshare IPC namespace? Or will that screw up desktop interaction?
-  sys(unshare(CLONE_NEWUSER | CLONE_NEWNS));
+  sys(unshare(CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWIPC));
 
   char user_map[64];
   write_file("/proc/self/setgroups", "deny\n");
@@ -441,12 +439,31 @@ int main(int argc, const char* argv[]) {
   sys(umount2("/tmp", MNT_DETACH));
   chdir("/");
 
-  // Drop privileges.
-  sys(setresuid(ruid, ruid, ruid));
 
   assert(argv[argc] == NULL);
 
-  // Execute!
-  sys(execvp(argv[0], (char**)argv));
-  die("can't get here");
+  // Fork
+  pid_t child = fork();
+  if (child == 0) {
+    // We are the child.
+
+    // Mount procfs that reflects our pid namespace.
+    sys(mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL));
+
+    // Drop privileges.
+    sys(setresuid(ruid, ruid, ruid));
+
+    // Execute!
+    sys(execvp(argv[0], (char**)argv));
+    die("can't get here");
+  }
+
+  int status;
+  sys(waitpid(child, &status, 0));
+
+  if (WIFEXITED(status) || WEXITSTATUS(status) == 0) {
+    _exit(0);
+  } else {
+    _exit(1);
+  }
 }
