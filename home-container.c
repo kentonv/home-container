@@ -193,7 +193,7 @@ void bind_in_container(enum bind_type type, const char* path) {
   assert(path[0] == '/');
 
   // Verify parent has been bound, or bind it "empty".
-  char parent[strlen(path + 1)];
+  char parent[strlen(path) + 1];
   strcpy(parent, path);
   char* slashPos = strrchr(parent + 1, '/');
   if (slashPos != NULL) {
